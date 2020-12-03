@@ -46,6 +46,35 @@ void taos_insert_call_back(void *param, TAOS_RES *tres, int code);
 void taos_select_call_back(void *param, TAOS_RES *tres, int code);
 void taos_error(TAOS *taos);
 
+static void queryDB(TAOS *taos, char *command) {
+  int i;
+  TAOS_RES *pSql = NULL;
+  int32_t   code = -1;
+
+  for (i = 0; i < 5; i++) {
+    if (NULL != pSql) {
+      taos_free_result(pSql);
+      pSql = NULL;
+    }
+    
+    pSql = taos_query(taos, command);
+    code = taos_errno(pSql);
+    if (0 == code) {
+      break;
+    }    
+  }
+
+  if (code != 0) {
+    fprintf(stderr, "Failed to run %s, reason: %s\n", command, taos_errstr(pSql));
+    taos_free_result(pSql);
+    taos_close(taos);
+    taos_cleanup();
+    exit(EXIT_FAILURE);
+  }
+
+  taos_free_result(pSql);
+}
+
 int main(int argc, char *argv[])
 {
   TAOS   *taos;
@@ -78,16 +107,14 @@ int main(int argc, char *argv[])
 
   printf("success to connect to server\n");
 
-  sprintf(sql, "drop database %s", db);
-  taos_query(taos, sql);
+  sprintf(sql, "drop database if exists %s", db);
+  queryDB(taos, sql);
 
   sprintf(sql, "create database %s", db);
-  if (taos_query(taos, sql) != 0)
-    taos_error(taos);
+  queryDB(taos, sql);
 
   sprintf(sql, "use %s", db);
-  if (taos_query(taos, sql) != 0)
-    taos_error(taos);
+  queryDB(taos, sql);
 
   strcpy(prefix, "asytbl_");
   for (i = 0; i < numOfTables; ++i) {
@@ -95,8 +122,7 @@ int main(int argc, char *argv[])
     tableList[i].taos = taos;
     sprintf(tableList[i].name, "%s%d", prefix, i);
     sprintf(sql, "create table %s%d (ts timestamp, volume bigint)", prefix, i);
-    if (taos_query(taos, sql) != 0)
-      taos_error(taos);
+    queryDB(taos, sql);
   }  
 
   gettimeofday(&systemTime, NULL);
@@ -108,11 +134,11 @@ int main(int argc, char *argv[])
 
   printf("start to insert...\n");
   gettimeofday(&systemTime, NULL);
-  //st = systemTime.tv_sec * 1000000 + systemTime.tv_usec;
+  st = systemTime.tv_sec * 1000000 + systemTime.tv_usec;
 
   for (i = 0; i<numOfTables; ++i) {
     // insert records in asynchronous API
-    sprintf(sql, "insert into %s values(now, 0)", tableList[i].name);
+    sprintf(sql, "insert into %s values(%ld, 0)", tableList[i].name, 1546300800000 + i);
     taos_query_a(taos, sql, taos_insert_call_back, (void *)(tableList + i));
   }
 
@@ -151,6 +177,7 @@ void taos_error(TAOS *con)
 {
   fprintf(stderr, "TDengine error: %s\n", taos_errstr(con));
   taos_close(con);
+  taos_cleanup();
   exit(1);
 }
 
@@ -174,7 +201,7 @@ void taos_insert_call_back(void *param, TAOS_RES *tres, int code)
 
   if (pTable->rowsTried < points) {
     // for this demo, insert another record
-    sprintf(sql, "insert into %s values(now+%da, %d)", pTable->name, pTable->rowsTried, pTable->rowsTried);
+    sprintf(sql, "insert into %s values(%ld, %d)", pTable->name, 1546300800000+pTable->rowsTried*1000, pTable->rowsTried);
     taos_query_a(pTable->taos, sql, taos_insert_call_back, (void *)pTable);
   }
   else {
@@ -186,6 +213,8 @@ void taos_insert_call_back(void *param, TAOS_RES *tres, int code)
       printf("%lld mseconds to insert %d data points\n", (et - st) / 1000, points*numOfTables);
     }
   }
+  
+  taos_free_result(tres);
 }
 
 void taos_retrieve_call_back(void *param, TAOS_RES *tres, int numOfRows)
@@ -197,7 +226,7 @@ void taos_retrieve_call_back(void *param, TAOS_RES *tres, int numOfRows)
 
     for (int i = 0; i<numOfRows; ++i) {
       // synchronous API to retrieve a row from batch of records
-      /*TAOS_ROW row = */taos_fetch_row(tres);
+      /*TAOS_ROW row = */(void)taos_fetch_row(tres);
       // process row
     }
 
@@ -211,7 +240,7 @@ void taos_retrieve_call_back(void *param, TAOS_RES *tres, int numOfRows)
     if (numOfRows < 0)
       printf("%s retrieve failed, code:%d\n", pTable->name, numOfRows);
 
-    taos_free_result(tres);
+    //taos_free_result(tres);
     printf("%d rows data retrieved from %s\n", pTable->rowsRetrieved, pTable->name);
 
     tablesProcessed++;
@@ -221,6 +250,8 @@ void taos_retrieve_call_back(void *param, TAOS_RES *tres, int numOfRows)
       printf("%lld mseconds to query %d data rows\n", (et - st) / 1000, points * numOfTables);
     }
   }
+
+  taos_free_result(tres);
 }
 
 void taos_select_call_back(void *param, TAOS_RES *tres, int code)
@@ -236,6 +267,10 @@ void taos_select_call_back(void *param, TAOS_RES *tres, int code)
   }
   else {
     printf("%s select failed, code:%d\n", pTable->name, code);
+    taos_free_result(tres);
+    taos_cleanup();
     exit(1);
   }
+
+  taos_free_result(tres);
 }
